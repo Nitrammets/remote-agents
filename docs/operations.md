@@ -95,6 +95,10 @@ Log in to Claude once on the box through a session (`rclaude`, then `/login`), a
 links into `~/.local/bin` (`BINDIR`), and writes `bin/com.remote-agents.link.plist` for that
 path. It loads nothing.
 
+At login the terminal can reopen its tabs before launchd starts the link daemon. A session
+started then waits up to 30 seconds for the daemon; it fails at once only when launchd does not
+have the daemon loaded.
+
 No shell setup is needed beyond having `~/.local/bin` (or the `BINDIR` you install to) on your
 `PATH`. Stop the link daemon with
 `launchctl bootout gui/$(id -u)/com.remote-agents.link`.

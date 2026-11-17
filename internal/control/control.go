@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"remote-agents/internal/jsonline"
 	"remote-agents/internal/linkproto"
@@ -173,6 +174,22 @@ func (c Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, errors.New("link daemon: status response without status")
 	}
 	return *resp.Status, nil
+}
+
+// Await returns once the daemon answers, asking again every interval while
+// it is down, until ctx ends.
+func (c Client) Await(ctx context.Context, interval time.Duration) error {
+	for {
+		_, err := c.Status(ctx)
+		if !errors.Is(err, ErrDaemonDown) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(interval):
+		}
+	}
 }
 
 // Held is a live registration; hook requests arrive on it as linkproto frames.

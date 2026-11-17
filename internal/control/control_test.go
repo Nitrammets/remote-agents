@@ -164,3 +164,35 @@ func TestServeEndsWhenTheDaemonGoesAway(t *testing.T) {
 		t.Fatal("Serve did not notice the daemon going away")
 	}
 }
+
+func TestAwaitReturnsOnceTheDaemonListens(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "ra-ctl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "c")
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		ln, err := net.Listen("unix", sock)
+		if err != nil {
+			return
+		}
+		t.Cleanup(func() { ln.Close() })
+		Serve(context.Background(), ln, NewRegistry(), func() Status { return Status{LinkUp: true} }, func(error) {})
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := (Client{Socket: sock}).Await(ctx, 10*time.Millisecond); err != nil {
+		t.Fatalf("Await = %v", err)
+	}
+}
+
+func TestAwaitGivesUpWhenTheDaemonNeverListens(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := Client{Socket: "/nonexistent/control.sock"}.Await(ctx, 10*time.Millisecond)
+	if !errors.Is(err, ErrDaemonDown) {
+		t.Fatalf("err = %v, want ErrDaemonDown", err)
+	}
+}

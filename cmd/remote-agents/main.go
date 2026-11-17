@@ -38,6 +38,7 @@ import (
 	"remote-agents/internal/hookexec"
 	"remote-agents/internal/laptopfiles"
 	"remote-agents/internal/laptoppaths"
+	"remote-agents/internal/launchd"
 	"remote-agents/internal/link"
 	"remote-agents/internal/linkproto"
 	"remote-agents/internal/resume"
@@ -273,12 +274,30 @@ func agentEntry(agentName string) (string, error) {
 	return entry, nil
 }
 
+// daemonStartWait is how long a session waits for a link daemon that launchd
+// has loaded but not started: at login the terminal's tabs run first.
+const daemonStartWait = 30 * time.Second
+
 func requireDaemon(e env) (control.Client, error) {
 	c := control.Client{Socket: e.paths.ControlSocket()}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, err := c.Status(ctx); err != nil {
-		return control.Client{}, fmt.Errorf("%w; load it with: launchctl bootstrap gui/%d ~/Library/LaunchAgents/com.remote-agents.link.plist", err, os.Getuid())
+	_, err := c.Status(ctx)
+	if !errors.Is(err, control.ErrDaemonDown) {
+		return c, err
+	}
+	loaded, lerr := launchd.Launchctl{Path: "/bin/launchctl", UID: os.Getuid()}.Loaded(ctx, launchd.LinkLabel)
+	if lerr != nil {
+		return control.Client{}, errors.Join(err, lerr)
+	}
+	if !loaded {
+		return control.Client{}, fmt.Errorf("%w; load it with: launchctl bootstrap gui/%d ~/Library/LaunchAgents/%s.plist", err, os.Getuid(), launchd.LinkLabel)
+	}
+	fmt.Fprintln(os.Stderr, "remote-agents: waiting for launchd to start the link daemon")
+	wait, cancelWait := context.WithTimeout(context.Background(), daemonStartWait)
+	defer cancelWait()
+	if err := c.Await(wait, 200*time.Millisecond); err != nil {
+		return control.Client{}, fmt.Errorf("%w; launchd has it loaded but did not start it within %s", err, daemonStartWait)
 	}
 	return c, nil
 }
