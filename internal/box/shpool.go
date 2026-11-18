@@ -60,7 +60,8 @@ func scopeArgv(l boxlayout.Layout, session, unit string, memoryMax uint64) []str
 // Attach runs shpool attached to the spec's session and returns its exit
 // code. shpool also exits 0 when another terminal takes the session over, so
 // a session still running after a clean exit is reported as taken over, and
-// one still running after a failed exit as unattachable. A
+// one still running after an exit that failed without shpool connecting a
+// client as unattachable. A
 // stale attempt of a run, one a newer attempt replaced, attaches nothing; if
 // one took the session between its claim and its attach, Attach takes the
 // session back.
@@ -121,12 +122,14 @@ func Attach(l boxlayout.Layout, s spec.Spec, stdio IO) (int, error) {
 		if code > 0 {
 			// An agent that exits takes its session with it, and a session
 			// another client still holds is only busy. One left disconnected
-			// means shpool itself failed to attach it.
+			// that shpool connected no client to since this attach began is
+			// one shpool itself failed to attach; a client it did connect
+			// lost its connection, and the next attach gets the session.
 			sess, running, err := listedAfter(l, s.Session, takeoverGrace)
 			if err != nil {
 				return 1, err
 			}
-			if running && sess.Status == "Disconnected" {
+			if running && sess.Status == "Disconnected" && !sess.connectedSince(began) {
 				fmt.Fprintf(stdio.Stderr, "\r\nremote-agents: shpool cannot attach %s, but its agent still runs on the box; attaching again will not help.\r\nremote-agents: to get the agent back, stop it with: systemctl --user stop '%s', then resume it.\r\n", s.Session, l.SessionScope(s.Session, "*"))
 				return spec.ExitUnattachable, nil
 			}
@@ -244,10 +247,18 @@ func Exec(l boxlayout.Layout, s spec.Spec) error {
 type shpoolSession struct {
 	Name            string `json:"name"`
 	StartedAtUnixMS int64  `json:"started_at_unix_ms"`
+	// LastConnectedAtUnixMS is when shpool last connected a client.
+	LastConnectedAtUnixMS *int64 `json:"last_connected_at_unix_ms"`
 	// LastDisconnectedAtUnixMS is null until a client first detaches.
 	LastDisconnectedAtUnixMS *int64 `json:"last_disconnected_at_unix_ms"`
 	Status                   string `json:"status"`
 	ShellPID                 int    `json:"shell_pid"`
+}
+
+// connectedSince reports whether shpool connected a client to the session at
+// or after t. shpool keeps its times in milliseconds.
+func (s shpoolSession) connectedSince(t time.Time) bool {
+	return s.LastConnectedAtUnixMS != nil && *s.LastConnectedAtUnixMS >= t.UnixMilli()
 }
 
 // detachedSince is when the session lost its last client.

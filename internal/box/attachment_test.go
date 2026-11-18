@@ -78,11 +78,12 @@ func TestUnnumberedAttemptsTakeOverAndOwnNothing(t *testing.T) {
 // listedUntil attaches have run.
 func fakeShpool(t *testing.T, l boxlayout.Layout, listedUntil int, onAttach string) string {
 	t.Helper()
-	return fakeShpoolListing(t, l, listedUntil, "Attached", onAttach)
+	return fakeShpoolListing(t, l, listedUntil, `"status":"Attached"`, onAttach)
 }
 
-// fakeShpoolListing is fakeShpool listing the session with status.
-func fakeShpoolListing(t *testing.T, l boxlayout.Layout, listedUntil int, status, onAttach string) string {
+// fakeShpoolListing is fakeShpool listing the session with fields, the JSON
+// members after its name and start; the shell expands them at each listing.
+func fakeShpoolListing(t *testing.T, l boxlayout.Layout, listedUntil int, fields, onAttach string) string {
 	t.Helper()
 	log := filepath.Join(l.Home, "attaches")
 	name := attempt(runID, 1).Session
@@ -93,7 +94,7 @@ for a in "$@"; do
     list)
       n=$(wc -l < '` + log + `' 2>/dev/null || echo 0)
       if [ "$n" -lt ` + strconv.Itoa(listedUntil) + ` ]; then
-        echo '{"sessions":[{"name":"` + name + `","started_at_unix_ms":1,"status":"` + status + `"}]}'
+        echo "{\"sessions\":[{\"name\":\"` + name + `\",\"started_at_unix_ms\":1,` + strings.ReplaceAll(fields, `"`, `\"`) + `}]}"
       else
         echo '{"sessions":[]}'
       fi
@@ -190,9 +191,9 @@ func TestAttachReportsAgentExitsTheBoxReservesAs254(t *testing.T) {
 
 func TestAttachSaysWhenShpoolCannotAttachASessionThatStillRuns(t *testing.T) {
 	l := testLayout(t)
-	// shpool attach fails at once, and the session stays listed with no
-	// client: its agent runs on.
-	log := fakeShpoolListing(t, l, 9, "Disconnected", "exit 1")
+	// shpool attach fails without connecting a client, and the session stays
+	// listed with none: its agent runs on.
+	log := fakeShpoolListing(t, l, 9, `"last_connected_at_unix_ms":1,"status":"Disconnected"`, "exit 1")
 	var stderr bytes.Buffer
 	code, err := Attach(l, attempt(runID, 1), IO{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &stderr})
 	if err != nil || code != spec.ExitUnattachable {
@@ -204,6 +205,20 @@ func TestAttachSaysWhenShpoolCannotAttachASessionThatStillRuns(t *testing.T) {
 	stop := "systemctl --user stop '" + l.SessionScope(attempt(runID, 1).Session, "*") + "'"
 	if !strings.Contains(stderr.String(), "still runs on the box") || !strings.Contains(stderr.String(), stop) {
 		t.Fatalf("stderr %q does not say the agent runs and how to stop it (%s)", stderr.String(), stop)
+	}
+}
+
+func TestAttachReportsAnAttachedClientThatDroppedAsBefore(t *testing.T) {
+	l := testLayout(t)
+	// shpool connected this attach's client, which then lost its connection:
+	// shpool attach fails and the session stays listed with no client, but
+	// the next attach gets it.
+	connected := `"last_connected_at_unix_ms":$(($(date +%s) * 1000 + 999)),"status":"Disconnected"`
+	fakeShpoolListing(t, l, 9, connected, "exit 1")
+	var stderr bytes.Buffer
+	code, err := Attach(l, attempt(runID, 1), IO{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &stderr})
+	if err != nil || code != 1 || strings.Contains(stderr.String(), "cannot attach") {
+		t.Fatalf("Attach = %d, %v; stderr %q", code, err, stderr.String())
 	}
 }
 
